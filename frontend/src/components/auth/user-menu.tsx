@@ -15,6 +15,7 @@ import { api } from '@/lib/api'
 import type { User } from '@/lib/types'
 import { useActive } from '@/stores/connections'
 import { useWorkspace } from '@/stores/workspace'
+import { publishAuthChange } from '@/lib/auth-events'
 import { AuditDialog } from './audit-dialog'
 import { ChangePasswordDialog } from './change-password-dialog'
 import { UsersDialog } from './users-dialog'
@@ -28,9 +29,10 @@ export function UserMenu({ me }: { me: User }) {
     await api.logout().catch(() => undefined)
     // Don't leave one person's cached data or SQL drafts in the browser for the next sign-in.
     useActive.getState().setActive(null)
-    useWorkspace.setState({ byConn: {} })
+    useWorkspace.setState({ byConn: {}, tableDrafts: {}, ownerUserId: null })
     qc.clear()
     qc.setQueryData(['me'], null)
+    publishAuthChange()
   }
 
   return (

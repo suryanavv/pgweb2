@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
+import { publishAuthChange } from '@/lib/auth-events'
 
 export function ChangePasswordDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
   const [current, setCurrent] = useState('')
@@ -15,6 +16,7 @@ export function ChangePasswordDialog({ open, onOpenChange }: { open: boolean; on
   const change = useMutation({
     mutationFn: () => api.changePassword(current, next),
     onSuccess: () => {
+      publishAuthChange()
       toast.success('Password changed. Your other devices were signed out.')
       setCurrent('')
       setNext('')

@@ -73,6 +73,8 @@ class TransactionManager:
     def __init__(self) -> None:
         self._open: dict[str, TxSession] = {}
         self._reaper: asyncio.Task | None = None
+        self._reservation_lock = asyncio.Lock()
+        self._starting_by_user: dict[str, int] = {}
 
     def start_reaper(self) -> None:
         self._reaper = asyncio.create_task(self._reap_loop())
@@ -106,21 +108,33 @@ class TransactionManager:
         return ts
 
     async def begin(self, user_id: str, conn_id: str, pool: asyncpg.Pool) -> TxSession:
-        if len(self.list_for(user_id)) >= get_settings().max_open_tx_per_user:
-            raise TxError(409, f"You already have {get_settings().max_open_tx_per_user} open transactions. Commit or roll one back first.")
+        limit = max(1, get_settings().max_open_tx_per_user)
+        async with self._reservation_lock:
+            pending = self._starting_by_user.get(user_id, 0)
+            if len(self.list_for(user_id)) + pending >= limit:
+                raise TxError(409, f"You already have {limit} open transactions. Commit or roll one back first.")
+            self._starting_by_user[user_id] = pending + 1
         try:
-            conn = await pool.acquire(timeout=5)
-        except (TimeoutError, asyncio.TimeoutError):
-            raise TxError(503, "No free database connections right now. Try again shortly.")
-        try:
-            tx = conn.transaction()
-            await tx.start()
-        except BaseException:
-            await pool.release(conn)
-            raise
-        ts = TxSession(uuid.uuid4().hex, user_id, conn_id, pool, conn, tx, datetime.now(UTC))
-        self._open[ts.id] = ts
-        return ts
+            try:
+                conn = await pool.acquire(timeout=5)
+            except (TimeoutError, asyncio.TimeoutError):
+                raise TxError(503, "No free database connections right now. Try again shortly.")
+            try:
+                tx = conn.transaction()
+                await tx.start()
+            except BaseException:
+                await pool.release(conn)
+                raise
+            ts = TxSession(uuid.uuid4().hex, user_id, conn_id, pool, conn, tx, datetime.now(UTC))
+            self._open[ts.id] = ts
+            return ts
+        finally:
+            async with self._reservation_lock:
+                remaining = self._starting_by_user.get(user_id, 1) - 1
+                if remaining:
+                    self._starting_by_user[user_id] = remaining
+                else:
+                    self._starting_by_user.pop(user_id, None)
 
     async def finish(self, ts: TxSession, *, commit: bool) -> None:
         """Commit or roll back, then always hand the connection back. Safe to call twice."""

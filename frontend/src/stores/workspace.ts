@@ -35,6 +35,8 @@ export const apiTableChanges = (draft: TableDraft): TableChanges => ({
 interface WorkspaceState {
   byConn: Record<string, ConnWorkspace>
   tableDrafts: Record<string, TableDraft>
+  ownerUserId: string | null
+  setOwnerUserId: (userId: string | null) => void
   setTableDraft: (tabId: string, draft: TableDraft) => void
   clearTableDraft: (tabId: string) => void
   openTable: (connId: string, schema: string, table: string) => void
@@ -60,6 +62,8 @@ export const useWorkspace = create<WorkspaceState>()(
       return {
         byConn: {},
         tableDrafts: {},
+        ownerUserId: null,
+        setOwnerUserId: (ownerUserId) => set({ ownerUserId }),
         setTableDraft: (tabId, draft) => set((s) => ({ tableDrafts: { ...s.tableDrafts, [tabId]: draft } })),
         clearTableDraft: (tabId) => set((s) => {
           const { [tabId]: _, ...rest } = s.tableDrafts
@@ -105,7 +109,7 @@ export const useWorkspace = create<WorkspaceState>()(
           }),
       }
     },
-    { name: 'pgweb2.workspace', partialize: (s) => ({ byConn: s.byConn }) },
+    { name: 'pgweb2.workspace', partialize: (s) => ({ byConn: s.byConn, ownerUserId: s.ownerUserId }) },
   ),
 )
 

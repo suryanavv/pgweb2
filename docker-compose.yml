@@ -4,6 +4,8 @@ services:
     environment:
       PGWEB_SECRET_KEY: ${PGWEB_SECRET_KEY:-}   # empty -> generated once into the data volume
       PGWEB_ALLOWED_HOSTS: ${PGWEB_ALLOWED_HOSTS:-[]}
+      # Uvicorn trusts forwarded headers only from the fixed web/Nginx container address below.
+      PGWEB_WEB_IP: ${PGWEB_WEB_IP:-172.30.0.20}
       # Secure cookies need HTTPS (browsers exempt http://localhost, Safari doesn't). Terminate TLS in
       # front of `web`, or set false for a plain-http trial run.
       PGWEB_COOKIE_SECURE: ${PGWEB_COOKIE_SECURE:-true}
@@ -22,15 +24,32 @@ services:
       retries: 5
       start_period: 15s
     restart: unless-stopped
+    networks:
+      pgweb2:
+        ipv4_address: ${PGWEB_API_IP:-172.30.0.10}
 
   web:
     build: ./frontend
     ports:
       - "${PGWEB_PORT:-8080}:8080"
+    environment:
+      # Set this to the CIDR of the actual trusted proxy immediately in front of Nginx.
+      # The safe default trusts no external proxy-supplied forwarding chain.
+      PGWEB_TRUSTED_UPSTREAM_CIDR: ${PGWEB_TRUSTED_UPSTREAM_CIDR:-127.0.0.1/32}
+      NGINX_ENVSUBST_FILTER: '^PGWEB_'
     depends_on:
       api:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      pgweb2:
+        ipv4_address: ${PGWEB_WEB_IP:-172.30.0.20}
+
+networks:
+  pgweb2:
+    ipam:
+      config:
+        - subnet: ${PGWEB_DOCKER_SUBNET:-172.30.0.0/24}
 
 volumes:
   api_data:

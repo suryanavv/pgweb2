@@ -14,8 +14,10 @@ class Settings(BaseSettings):
     # Login sessions: opaque token in an HttpOnly cookie, revocable server-side.
     session_ttl_days: int = 7  # absolute lifetime
     session_idle_minutes: int = 480  # signed out after this long without a request
-    max_failed_logins: int = 5
-    lockout_minutes: int = 15
+    login_attempt_window_seconds: int = 900
+    max_login_failures_per_ip_email: int = 5
+    max_login_failures_per_ip: int = 30
+    max_login_rate_entries: int = 10_000
     # Optional first admin, created on startup only while no users exist (handy for Docker).
     bootstrap_admin_email: str = ""
     bootstrap_admin_password: str = ""

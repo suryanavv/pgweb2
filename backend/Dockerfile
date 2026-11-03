@@ -14,5 +14,5 @@ RUN useradd -r -u 1000 app && mkdir /data && chown app /data
 USER app
 EXPOSE 8000
 # One worker on purpose: manual transactions are held in this process's memory.
-# --forwarded-allow-ips='*' is safe only because the compose file never publishes this port.
-CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips='*'"]
+# Compose passes the exact Nginx peer address; never trust forwarded headers from every peer.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=\"${PGWEB_WEB_IP:-172.30.0.20}\""]

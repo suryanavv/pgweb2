@@ -1,3 +1,8 @@
+import uuid
+
+import asyncpg
+
+
 async def _create(client, body, **extra):
     r = await client.post("/api/connections", json={**body, **extra})
     assert r.status_code == 201, r.text
@@ -72,12 +77,33 @@ async def test_read_only_blocks_writes_and_browse_is_always_read_only(new_user, 
 
 async def test_switch_database_reuses_sibling_and_keeps_owner(admin, new_user, conn_body):
     member = await new_user()
-    shared = await _create(admin, conn_body, shared=True, name="team")
-    a = await member.post(f"/api/connections/{shared['id']}/database", json={"database": "postgres"})
-    assert a.status_code == 200
-    b = await member.post(f"/api/connections/{shared['id']}/database", json={"database": "postgres"})
-    assert a.json()["id"] == b.json()["id"]  # no pile-up of duplicates
-    assert a.json()["can_manage"] is False  # the member didn't become owner of a shared credential
+    shared = await _create(admin, conn_body, shared=True, name="team A")
+    target_db = f"pgweb2_test_{uuid.uuid4().hex}"
+    setup = await asyncpg.connect(
+        host=conn_body["host"], port=conn_body["port"], database=conn_body["database"],
+        user=conn_body["user"], password=conn_body["password"],
+    )
+    try:
+        await setup.execute(f'CREATE DATABASE "{target_db}"')
+    finally:
+        await setup.close()
+
+    denied = await member.post(f"/api/connections/{shared['id']}/database", json={"database": target_db})
+    assert denied.status_code == 403
+    assert {c["id"] for c in (await member.get("/api/connections")).json()} == {shared["id"]}
+
+    target = await _create(admin, {**conn_body, "database": target_db}, shared=True, name="team B")
+    assert target["shared"] and target["can_manage"] is True
+    listed = (await member.get("/api/connections")).json()
+    assert target["id"] in {c["id"] for c in listed}
+
+    switched = await member.post(f"/api/connections/{shared['id']}/database", json={"database": target_db})
+    assert switched.status_code == 200 and switched.json()["id"] == target["id"]
+    assert switched.json()["can_manage"] is False  # the member cannot manage the shared credential
+
+    log = (await admin.get("/api/audit", params={"user_email": member.email})).json()
+    assert any(e["action"] == "connection_db_switch_denied" for e in log)
+    assert any(e["action"] == "connection_db_switch" for e in log)
 
 
 async def test_audit_trail_records_who_ran_what(admin, new_user, conn_body):

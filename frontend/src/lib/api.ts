@@ -40,7 +40,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (init.body) headers.set('Content-Type', 'application/json')
   // The API rejects state-changing requests without this; a cross-site form can't set it.
   headers.set('X-Requested-With', 'pgweb2')
-  const res = await fetch(path, { ...init, headers, credentials: 'include' })
+  const res = await fetch(path, { ...init, headers, credentials: 'include', cache: 'no-store' })
   if (!res.ok) {
     let detail = res.statusText
     try {

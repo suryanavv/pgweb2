@@ -122,6 +122,7 @@ async def delete_connection(
 @router.post("/{conn_id}/database", response_model=ConnectionRead)
 async def switch_database(
     body: DatabaseSwitch,
+    request: Request,
     base: Connection = Depends(usable_connection),
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_session),
@@ -143,17 +144,34 @@ async def switch_database(
     )
     row = next((c for c in candidates if can_use(c, user) and decrypt(c.password_enc) == password), None)
     if row is None:
-        _check_host(base.host)
+        if not can_manage(base, user):
+            await audit.record(
+                db, "connection_db_switch_denied", user=user, conn=base,
+                detail=body.database, error="A shared database sibling must be created by its owner or an admin.", request=request,
+            )
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the owner or an admin can add a database to a shared connection")
         target = ConnectionCreate(
             name=body.name or f"{base.name} / {body.database}"[:100],
             host=base.host, port=base.port, database=body.database, user=base.user,
             ssl_mode=base.ssl_mode, read_only=base.read_only, password=password,
         )
-        await _verify_or_400(target, password)
+        try:
+            _check_host(base.host)
+            await _verify_or_400(target, password)
+        except HTTPException as exc:
+            await audit.record(
+                db, "connection_db_switch_denied", user=user, conn=base,
+                detail=body.database, error=str(exc.detail), request=request,
+            )
+            raise
         row = Connection(
             **target.model_dump(exclude={"password", "shared"}),
             password_enc=encrypt(password), owner_id=base.owner_id, shared=base.shared,
         )
         db.add(row)
         await db.commit()
+    await audit.record(
+        db, "connection_db_switch", user=user, conn=row,
+        detail=f"from {base.database} to {body.database}", request=request,
+    )
     return to_read(row, user)

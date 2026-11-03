@@ -39,8 +39,16 @@ _SAFE = {"GET", "HEAD", "OPTIONS"}
 async def require_ajax_header(request: Request, call_next):
     """CSRF defence in depth on top of SameSite=strict: browsers can't add this header cross-site without CORS approval."""
     if request.method not in _SAFE and request.url.path.startswith("/api/") and request.headers.get("x-requested-with") != "pgweb2":
-        return JSONResponse({"detail": "Missing X-Requested-With header"}, status_code=403)
-    return await call_next(request)
+        response = JSONResponse({"detail": "Missing X-Requested-With header"}, status_code=403)
+    else:
+        response = await call_next(request)
+
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "private, no-store"
+        vary = {value.strip() for value in response.headers.get("Vary", "").split(",") if value.strip()}
+        vary.add("Cookie")
+        response.headers["Vary"] = ", ".join(sorted(vary))
+    return response
 
 
 app.add_middleware(  # added last, so it is outermost and decorates every response

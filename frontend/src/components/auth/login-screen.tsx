@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { api } from '@/lib/api'
+import { publishAuthChange } from '@/lib/auth-events'
 
 export function LoginScreen() {
   const qc = useQueryClient()
@@ -13,7 +14,10 @@ export function LoginScreen() {
   const [password, setPassword] = useState('')
   const login = useMutation({
     mutationFn: () => api.login(email.trim(), password),
-    onSuccess: (user) => qc.setQueryData(['me'], user),
+    onSuccess: (user) => {
+      qc.setQueryData(['me'], user)
+      publishAuthChange()
+    },
   })
 
   return (

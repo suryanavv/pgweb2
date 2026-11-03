@@ -15,7 +15,8 @@ _TMP = Path(tempfile.mkdtemp(prefix="pgweb2-test-"))
 os.environ.update(
     PGWEB_DATA_DIR=str(_TMP / "api"),
     PGWEB_COOKIE_SECURE="false",
-    PGWEB_MAX_FAILED_LOGINS="3",
+    PGWEB_MAX_LOGIN_FAILURES_PER_IP_EMAIL="3",
+    PGWEB_MAX_LOGIN_FAILURES_PER_IP="100",
     PGWEB_BOOTSTRAP_ADMIN_EMAIL="admin@example.com",
     PGWEB_BOOTSTRAP_ADMIN_PASSWORD="correct horse battery",
     PGWEB_MAX_OPEN_TX_PER_USER="2",
@@ -52,8 +53,8 @@ async def app(migrated):
         yield fastapi_app
 
 
-def make_client(app) -> httpx2.AsyncClient:
-    return httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url="http://test", headers=HEADERS)
+def make_client(app, client=("127.0.0.1", 12345)) -> httpx2.AsyncClient:
+    return httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app, client=client), base_url="http://test", headers=HEADERS)
 
 
 async def login(client, email, password):

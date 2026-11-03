@@ -1,6 +1,9 @@
 import pytest
 
 from tests.conftest import ADMIN, make_client, login
+from app.core.config import get_settings
+from app.core import login_rate_limit
+from app.core.login_rate_limit import LoginRateLimiter
 
 
 async def test_requires_login(app):
@@ -23,12 +26,56 @@ async def test_login_logout_and_cookie_flags(app):
         assert r.status_code == 200 and r.json()["role"] == "admin"
         cookie = r.headers["set-cookie"].lower()
         assert "httponly" in cookie and "samesite=strict" in cookie
+        assert r.headers["cache-control"] == "private, no-store"
+        assert "cookie" in r.headers.get("vary", "").lower()
         assert "password" not in r.text
-        assert (await c.get("/api/auth/me")).status_code == 200
+        me = await c.get("/api/auth/me")
+        assert me.status_code == 200
+        assert me.headers["cache-control"] == "private, no-store"
+        assert "cookie" in me.headers.get("vary", "").lower()
         raw = c.cookies.get("pgweb_session")
         assert (await c.post("/api/auth/logout")).status_code == 204
         c.cookies.set("pgweb_session", raw)  # replaying the old cookie must fail: the session is gone server-side
         assert (await c.get("/api/auth/me")).status_code == 401
+
+
+async def test_sessions_are_independent_between_devices(app, new_user):
+    first_device = await new_user()
+    fresh_device = make_client(app)
+    assert (await fresh_device.get("/api/auth/me")).status_code == 401
+
+    await login(fresh_device, first_device.email, "a-long-password")
+    first_cookie = first_device.cookies.get("pgweb_session")
+    second_cookie = fresh_device.cookies.get("pgweb_session")
+    assert first_cookie and second_cookie and first_cookie != second_cookie
+    first_me = await first_device.get("/api/auth/me")
+    second_me = await fresh_device.get("/api/auth/me")
+    assert first_me.status_code == second_me.status_code == 200
+    assert first_me.json()["id"] == second_me.json()["id"] == first_device.user_id
+
+    await fresh_device.post("/api/auth/logout")
+    assert (await fresh_device.get("/api/auth/me")).status_code == 401
+    assert (await first_device.get("/api/auth/me")).status_code == 200
+    await fresh_device.aclose()
+
+
+async def test_each_session_resolves_its_own_account(new_user):
+    user_a = await new_user()
+    user_b = await new_user()
+    response_a = await user_a.get("/api/auth/me")
+    response_b = await user_b.get("/api/auth/me")
+    assert response_a.status_code == response_b.status_code == 200
+    assert response_a.json()["id"] == user_a.user_id
+    assert response_b.json()["id"] == user_b.user_id
+    assert response_a.json()["id"] != response_b.json()["id"]
+
+
+async def test_all_api_responses_are_not_cacheable(app):
+    async with make_client(app) as c:
+        response = await c.get("/api/auth/me")
+        assert response.status_code == 401
+        assert response.headers["cache-control"] == "private, no-store"
+        assert "cookie" in response.headers.get("vary", "").lower()
 
 
 async def test_bad_credentials_are_uniform(app):
@@ -39,13 +86,46 @@ async def test_bad_credentials_are_uniform(app):
         assert a.json() == b.json()  # can't tell which emails exist
 
 
-async def test_lockout_after_repeated_failures(app, new_user):
+async def test_login_failures_throttle_only_that_source_ip(app, new_user):
     victim = await new_user()
-    async with make_client(app) as c:
+    async with make_client(app, ("192.0.2.10", 12001)) as c:
         for _ in range(3):
             assert (await c.post("/api/auth/login", json={"email": victim.email, "password": "nope-nope-nope"})).status_code == 401
-        r = await c.post("/api/auth/login", json={"email": victim.email, "password": "a-long-password"})
-        assert r.status_code == 429  # even the right password is refused while locked
+        limited = await c.post("/api/auth/login", json={"email": victim.email, "password": "nope-nope-nope"})
+        assert limited.status_code == 401 and limited.json() == {"detail": "Invalid email or password"}
+    async with make_client(app, ("192.0.2.11", 12002)) as other_ip:
+        r = await other_ip.post("/api/auth/login", json={"email": victim.email, "password": "a-long-password"})
+        assert r.status_code == 200  # failures at one IP never lock the account for another IP
+
+
+def test_login_limiter_enforces_pair_and_ip_limits_with_expiry_and_bounded_state(monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "login_attempt_window_seconds", 5)
+    monkeypatch.setattr(settings, "max_login_failures_per_ip_email", 2)
+    monkeypatch.setattr(settings, "max_login_failures_per_ip", 3)
+    monkeypatch.setattr(settings, "max_login_rate_entries", 4)
+    clock = [100.0]
+    monkeypatch.setattr(login_rate_limit, "monotonic", lambda: clock[0])
+    limiter = LoginRateLimiter()
+
+    assert limiter.reserve("192.0.2.20", "a@example.com")
+    assert limiter.reserve("192.0.2.20", "a@example.com")
+    assert not limiter.reserve("192.0.2.20", "a@example.com")  # in-flight attempts count toward the cap
+    limiter.finish_failure("192.0.2.20", "a@example.com")
+    limiter.finish_failure("192.0.2.20", "a@example.com")
+    assert not limiter.reserve("192.0.2.20", "a@example.com")
+    assert limiter.reserve("192.0.2.21", "a@example.com")
+    limiter.release("192.0.2.21", "a@example.com")
+
+    for email in ("b@example.com", "c@example.com", "d@example.com"):
+        assert limiter.reserve("192.0.2.30", email)
+        limiter.finish_failure("192.0.2.30", email)
+    assert not limiter.reserve("192.0.2.30", "other@example.com")  # broader per-IP cap
+    assert len(set(limiter._failures) | set(limiter._pending)) <= 4
+
+    clock[0] += 6
+    assert limiter.reserve("192.0.2.20", "a@example.com")
+    limiter.release("192.0.2.20", "a@example.com")
 
 
 async def test_user_admin_is_admin_only(app, admin, new_user):
